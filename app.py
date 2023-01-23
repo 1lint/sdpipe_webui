@@ -5,7 +5,7 @@ from inpaint_pipeline import SDInpaintPipeline as StableDiffusionInpaintPipeline
 from diffusers import (
     StableDiffusionPipeline,
     StableDiffusionImg2ImgPipeline,
-    StableDiffusionInpaintPipelineLegacy # uncomment this line to use original inpaint pipeline
+    #StableDiffusionInpaintPipelineLegacy # uncomment this line to use original inpaint pipeline
 )
 
 import diffusers.schedulers
@@ -34,12 +34,12 @@ scheduler_names = list(scheduler_dict.keys())
 default_scheduler = scheduler_names[3]  # expected to be DPM Multistep
 
 model_ids = [
-  "andite/anything-v4.0",
-  "hakurei/waifu-diffusion",
-  "prompthero/openjourney-v2",
-  "runwayml/stable-diffusion-v1-5", 
-  "johnslegers/epic-diffusion",
-  "stabilityai/stable-diffusion-2-1",
+    "andite/anything-v4.0",
+    "hakurei/waifu-diffusion",
+    "prompthero/openjourney-v2",
+    "runwayml/stable-diffusion-v1-5", 
+    "johnslegers/epic-diffusion",
+    "stabilityai/stable-diffusion-2-1",
 ]
 
 loaded_model_id = ""
@@ -102,6 +102,7 @@ def generate(
     strength=0.5,
     inpaint_image=None,
     inpaint_strength=0.5,
+    inpaint_radio='',
     neg_prompt="",
     pipe_class=StableDiffusionPipeline,
     pipe_kwargs="{}",
@@ -161,6 +162,7 @@ def generate(
         init_image = inpaint_image["image"].resize((width, height))
         mask = inpaint_image["mask"].resize((width, height))
 
+        
         result = pipe(
             prompt,
             negative_prompt=neg_prompt,
@@ -169,6 +171,7 @@ def generate(
             mask_image=mask,
             num_inference_steps=int(steps),
             strength=inpaint_strength,
+            preserve_unmasked_image=(inpaint_radio == inpaint_options[0]),
             guidance_scale=guidance,
             generator=generator,
         )
@@ -254,6 +257,8 @@ with gr.Blocks(css="style.css") as demo:
                     step=0.02,
                     value=0.8,
                 )
+                inpaint_options = ["preserve non-masked portions of image", "output entire inpainted image"]
+                inpaint_radio = gr.Radio(inpaint_options, value=inpaint_options[0], show_label=False, interactive=True)
 
             with gr.Row():
                 batch_size = gr.Slider(
@@ -315,6 +320,7 @@ with gr.Blocks(css="style.css") as demo:
         strength,
         inpaint_image,
         inpaint_strength,
+        inpaint_radio,
         neg_prompt,
         pipe_state,
         pipe_kwargs,

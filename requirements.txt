@@ -1,0 +1,5 @@
+diffusers==0.11.1
+gradio==3.16.2
+numpy==1.24.1
+Pillow==9.4.0
+torch==1.12.1+cu113
