@@ -1,4 +1,3 @@
-
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -16,21 +15,30 @@ from typing import Optional, Union, List, Callable
 import PIL
 import numpy as np
 
-from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_inpaint_legacy import preprocess_image, deprecate, StableDiffusionInpaintPipelineLegacy, StableDiffusionPipelineOutput, PIL_INTERPOLATION
+from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_inpaint_legacy import (
+    preprocess_image,
+    deprecate,
+    StableDiffusionInpaintPipelineLegacy,
+    StableDiffusionPipelineOutput,
+    PIL_INTERPOLATION,
+)
+
 
 def preprocess_mask(mask, scale_factor=8):
     mask = mask.convert("L")
     w, h = mask.size
     w, h = map(lambda x: x - x % 32, (w, h))  # resize to integer multiple of 32
 
-    #input_mask = mask.resize((w, h), resample=PIL_INTERPOLATION["nearest"])
+    # input_mask = mask.resize((w, h), resample=PIL_INTERPOLATION["nearest"])
     input_mask = np.array(mask).astype(np.float32) / 255.0
     input_mask = np.tile(input_mask, (3, 1, 1))
     input_mask = input_mask[None].transpose(0, 1, 2, 3)  # add batch dimension
     input_mask = 1 - input_mask  # repaint white, keep black
     input_mask = torch.round(torch.from_numpy(input_mask))
 
-    mask = mask.resize((w // scale_factor, h // scale_factor), resample=PIL_INTERPOLATION["nearest"])
+    mask = mask.resize(
+        (w // scale_factor, h // scale_factor), resample=PIL_INTERPOLATION["nearest"]
+    )
     mask = np.array(mask).astype(np.float32) / 255.0
     mask = np.tile(mask, (4, 1, 1))
     mask = mask[None].transpose(0, 1, 2, 3)  # add batch dimension
@@ -38,7 +46,6 @@ def preprocess_mask(mask, scale_factor=8):
     mask = torch.round(torch.from_numpy(mask))
 
     return mask, input_mask
-
 
 
 class SDInpaintPipeline(StableDiffusionInpaintPipelineLegacy):
@@ -120,8 +127,8 @@ class SDInpaintPipeline(StableDiffusionInpaintPipelineLegacy):
                 The frequency at which the `callback` function will be called. If not specified, the callback will be
                 called at every step.
             preserve_unmasked_image (`bool`, *optional*, defaults to `True`):
-                Whether or not to preserve the unmasked portions of the original image in the inpainted output. If False, 
-                inpainting of the masked latents may produce noticeable distortion of unmasked portions of the decoded 
+                Whether or not to preserve the unmasked portions of the original image in the inpainted output. If False,
+                inpainting of the masked latents may produce noticeable distortion of unmasked portions of the decoded
                 image.
 
         Returns:
@@ -148,7 +155,11 @@ class SDInpaintPipeline(StableDiffusionInpaintPipelineLegacy):
 
         # 3. Encode input prompt
         text_embeddings = self._encode_prompt(
-            prompt, device, num_images_per_prompt, do_classifier_free_guidance, negative_prompt
+            prompt,
+            device,
+            num_images_per_prompt,
+            do_classifier_free_guidance,
+            negative_prompt,
         )
 
         # 4. Preprocess image and mask
@@ -157,17 +168,27 @@ class SDInpaintPipeline(StableDiffusionInpaintPipelineLegacy):
 
         # get mask corresponding to input latents as well as image
         if not isinstance(mask_image, torch.FloatTensor):
-            mask_image, input_mask_image = preprocess_mask(mask_image, self.vae_scale_factor)
+            mask_image, input_mask_image = preprocess_mask(
+                mask_image, self.vae_scale_factor
+            )
 
         # 5. set timesteps
         self.scheduler.set_timesteps(num_inference_steps, device=device)
-        timesteps, num_inference_steps = self.get_timesteps(num_inference_steps, strength, device)
+        timesteps, num_inference_steps = self.get_timesteps(
+            num_inference_steps, strength, device
+        )
         latent_timestep = timesteps[:1].repeat(batch_size * num_images_per_prompt)
 
         # 6. Prepare latent variables
         # encode the init image into latents and scale the latents
         latents, init_latents_orig, noise = self.prepare_latents(
-            image, latent_timestep, batch_size, num_images_per_prompt, text_embeddings.dtype, device, generator
+            image,
+            latent_timestep,
+            batch_size,
+            num_images_per_prompt,
+            text_embeddings.dtype,
+            device,
+            generator,
         )
 
         # 7. Prepare mask latent
@@ -181,33 +202,47 @@ class SDInpaintPipeline(StableDiffusionInpaintPipelineLegacy):
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
-                
+
                 # expand the latents if we are doing classifier free guidance
-                latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
-                latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
+                latent_model_input = (
+                    torch.cat([latents] * 2) if do_classifier_free_guidance else latents
+                )
+                latent_model_input = self.scheduler.scale_model_input(
+                    latent_model_input, t
+                )
 
                 # predict the noise residual
-                noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
+                noise_pred = self.unet(
+                    latent_model_input, t, encoder_hidden_states=text_embeddings
+                ).sample
 
                 # perform guidance
                 if do_classifier_free_guidance:
                     noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                    noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+                    noise_pred = noise_pred_uncond + guidance_scale * (
+                        noise_pred_text - noise_pred_uncond
+                    )
 
                 # compute the previous noisy sample x_t -> x_t-1
-                latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
+                latents = self.scheduler.step(
+                    noise_pred, t, latents, **extra_step_kwargs
+                ).prev_sample
                 # masking
                 if add_predicted_noise:
                     init_latents_proper = self.scheduler.add_noise(
                         init_latents_orig, noise_pred_uncond, torch.tensor([t])
                     )
                 else:
-                    init_latents_proper = self.scheduler.add_noise(init_latents_orig, noise, torch.tensor([t]))
+                    init_latents_proper = self.scheduler.add_noise(
+                        init_latents_orig, noise, torch.tensor([t])
+                    )
 
                 latents = (init_latents_proper * mask) + (latents * (1 - mask))
 
                 # call the callback, if provided
-                if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
+                if i == len(timesteps) - 1 or (
+                    (i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0
+                ):
                     progress_bar.update()
                     if callback is not None and i % callback_steps == 0:
                         callback(i, t, latents)
@@ -225,7 +260,9 @@ class SDInpaintPipeline(StableDiffusionInpaintPipelineLegacy):
             # restore unmasked parts of image with original image
             input_mask_image = input_mask_image.to(inpaint_image)
             image = image.to(inpaint_image)
-            image = (image * input_mask_image) + (inpaint_image * (1 - input_mask_image)) # use original unmasked portions of image to avoid degradation
+            image = (image * input_mask_image) + (
+                inpaint_image * (1 - input_mask_image)
+            )  # use original unmasked portions of image to avoid degradation
 
             # post-processing of image
             image = (image / 2 + 0.5).clamp(0, 1)
@@ -235,7 +272,9 @@ class SDInpaintPipeline(StableDiffusionInpaintPipelineLegacy):
             image = self.decode_latents(latents)
 
         # 11. Run safety checker
-        image, has_nsfw_concept = self.run_safety_checker(image, device, text_embeddings.dtype)
+        image, has_nsfw_concept = self.run_safety_checker(
+            image, device, text_embeddings.dtype
+        )
 
         # 12. Convert to PIL
         if output_type == "pil":
@@ -244,4 +283,6 @@ class SDInpaintPipeline(StableDiffusionInpaintPipelineLegacy):
         if not return_dict:
             return (image, has_nsfw_concept)
 
-        return StableDiffusionPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept)
+        return StableDiffusionPipelineOutput(
+            images=image, nsfw_content_detected=has_nsfw_concept
+        )

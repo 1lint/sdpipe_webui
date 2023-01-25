@@ -1,0 +1,6 @@
+andite/anything-v4.0
+hakurei/waifu-diffusion
+prompthero/openjourney-v2
+runwayml/stable-diffusion-v1-5
+johnslegers/epic-diffusion
+stabilityai/stable-diffusion-2-1
