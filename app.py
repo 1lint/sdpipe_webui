@@ -5,7 +5,6 @@ from inpaint_pipeline import SDInpaintPipeline as StableDiffusionInpaintPipeline
 from diffusers import (
     StableDiffusionPipeline,
     StableDiffusionImg2ImgPipeline,
-    #StableDiffusionInpaintPipelineLegacy # uncomment this line to use original inpaint pipeline
 )
 
 import diffusers.schedulers
@@ -14,8 +13,28 @@ import torch
 import random
 from multiprocessing import cpu_count
 import json
+from PIL import Image
+import os
+import argparse
+import shutil
+import gc
 
 import importlib
+
+from textual_inversion import main as run_textual_inversion
+
+def pad_image(image):
+    w, h = image.size
+    if w == h:
+        return image
+    elif w > h:
+        new_image = Image.new(image.mode, (w, w), (0, 0, 0))
+        new_image.paste(image, (0, (w - h) // 2))
+        return new_image
+    else:
+        new_image = Image.new(image.mode, (h, h), (0, 0, 0))
+        new_image.paste(image, ((h - w) // 2, 0))
+        return new_image
 
 _xformers_available = importlib.util.find_spec("xformers") is not None
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -56,8 +75,7 @@ def load_pipe(
     if model_id != loaded_model_id:
         pipe = pipe_class.from_pretrained(
             model_id,
-            # torch_dtype=torch.float16,
-            # revision='fp16',
+            torch_dtype=torch.float16,
             safety_checker=None,
             requires_safety_checker=False,
             scheduler=scheduler.from_pretrained(model_id, subfolder="scheduler"),
@@ -87,7 +105,8 @@ def load_pipe(
 pipe = None
 pipe = load_pipe(model_ids[0], default_scheduler)
 
-
+@torch.autocast(device)
+@torch.no_grad()
 def generate(
     model_name,
     scheduler_name,
@@ -177,9 +196,75 @@ def generate(
         )
 
     else:
-        None, f"Unhandled pipeline class: {pipe_class}"
+        return None, f"Unhandled pipeline class: {pipe_class}", -1
 
-    return result.images, status_message
+    return result.images, status_message, seed
+
+
+# based on lvkaokao/textual-inversion-training
+def train_textual_inversion(model_name, scheduler_name, type_of_thing, files, concept_word, init_word, text_train_steps, text_train_bsz, text_learning_rate, progress=gr.Progress(track_tqdm=True)):
+
+    pipe = load_pipe(
+        model_id=model_name,
+        scheduler_name=scheduler_name,
+        pipe_class=StableDiffusionPipeline,
+    )
+
+    pipe.disable_xformers_memory_efficient_attention() # xformers handled by textual inversion script
+
+    concept_dir = 'concept_images'
+    output_dir = 'output_model'
+    training_resolution = 512
+
+    if os.path.exists(output_dir): shutil.rmtree('output_model')
+    if os.path.exists(concept_dir): shutil.rmtree('concept_images')
+
+    os.makedirs(concept_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
+
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    if(prompt == "" or prompt == None):
+        raise gr.Error("You forgot to define your concept prompt")
+
+    for j, file_temp in enumerate(files):
+        file = Image.open(file_temp.name)
+        image = pad_image(file)
+        image = image.resize((training_resolution, training_resolution))
+        extension = file_temp.name.split(".")[1]
+        image = image.convert('RGB')
+        image.save(f'{concept_dir}/{j+1}.{extension}', quality=100)
+
+    
+    args_general = argparse.Namespace(
+            train_data_dir=concept_dir,
+            learnable_property=type_of_thing,
+            placeholder_token=concept_word,
+            initializer_token=init_word,
+            resolution=training_resolution,
+            train_batch_size=text_train_bsz,
+            gradient_accumulation_steps=1,
+            gradient_checkpointing=True,
+            mixed_precision='fp16',
+            use_bf16=False,
+            max_train_steps=int(text_train_steps),
+            learning_rate=text_learning_rate,
+            scale_lr=True,
+            lr_scheduler="constant",
+            lr_warmup_steps=0,
+            output_dir=output_dir,
+        )
+
+    try:
+        final_result = run_textual_inversion(pipe, args_general)
+    except Exception as e:
+        raise gr.Error(e)
+
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    return f'Finished training! Check the {output_dir} directory for saved model weights'
 
 
 default_img_size = 512
@@ -260,6 +345,32 @@ with gr.Blocks(css="style.css") as demo:
                 inpaint_options = ["preserve non-masked portions of image", "output entire inpainted image"]
                 inpaint_radio = gr.Radio(inpaint_options, value=inpaint_options[0], show_label=False, interactive=True)
 
+            with gr.Tab("Textual Inversion") as tab:
+                tab.select(lambda: StableDiffusionPipeline, [], pipe_state)
+
+                type_of_thing = gr.Dropdown(label="What would you like to train?", choices=["object", "person", "style"], value="object", interactive=True)
+
+                text_train_bsz = gr.Slider(
+                    label="Training Batch Size",
+                    minimum=1,
+                    maximum=8,
+                    step=1,
+                    value=1,
+                )
+
+                files = gr.File(label=f'''Upload the images for your concept''', file_count="multiple", interactive=True, visible=True)
+
+                text_train_steps = gr.Number(label="How many steps", value=1000)
+
+                text_learning_rate = gr.Number(label="Learning Rate", value=5.e-4)
+
+                concept_word = gr.Textbox(label=f'''concept word - use a unique, made up word to avoid collisions''')
+                init_word = gr.Textbox(label=f'''initial word - to init the concept embedding''')
+
+                textual_inversion_button = gr.Button(value="Train Textual Inversion")
+
+                training_status = gr.Text(label="Training Status")
+
             with gr.Row():
                 batch_size = gr.Slider(
                     label="Batch Size", value=1, minimum=1, maximum=8, step=1
@@ -325,10 +436,18 @@ with gr.Blocks(css="style.css") as demo:
         pipe_state,
         pipe_kwargs,
     ]
-    outputs = [gallery, generation_details]
+    outputs = [gallery, generation_details, seed]
 
     prompt.submit(generate, inputs=inputs, outputs=outputs)
     generate_button.click(generate, inputs=inputs, outputs=outputs)
 
+    textual_inversion_inputs = [model_name, scheduler_name, type_of_thing, files, concept_word, init_word, text_train_steps, text_train_bsz, text_learning_rate]
+
+    textual_inversion_button.click(train_textual_inversion, inputs=textual_inversion_inputs, outputs=[training_status])
+
+
+#demo = gr.TabbedInterface([demo, dreambooth_tab], ["Main", "Dreambooth"])
+
 demo.queue(concurrency_count=cpu_count())
+
 demo.launch()
